@@ -9,6 +9,7 @@ use crate::install::InstallState;
 use crate::loader::{add_runtime_search_path, preload_library};
 
 const CUDA_SUCCESS: i32 = 0;
+const CUDA_12_9_DRIVER_VERSION: i32 = 12090;
 const CUDA_13_0_DRIVER_VERSION: i32 = 13000;
 const CUDA_13_1_DRIVER_VERSION: i32 = 13010;
 const CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR: i32 = 75;
@@ -39,32 +40,67 @@ struct PypiFile {
 #[allow(dead_code)]
 struct WheelSpec {
     package: &'static str,
-    windows_dylibs: &'static [&'static str],
-    linux_dylibs: &'static [&'static str],
+    dylibs: &'static [&'static str],
+    extract_policy: ExtractPolicy<'static>,
 }
 
+#[cfg(target_os = "windows")]
 const WHEELS: &[WheelSpec] = &[
     WheelSpec {
         package: "nvidia-cuda-runtime/13.0.96",
-        windows_dylibs: &["cudart64_13.dll"],
-        linux_dylibs: &["libcudart.so.13"],
+        dylibs: &["cudart64_13.dll"],
+        extract_policy: ExtractPolicy::Selected(&["cudart64_13.dll"]),
     },
     WheelSpec {
         package: "nvidia-cublas/13.0.2.14",
-        windows_dylibs: &["cublasLt64_13.dll", "cublas64_13.dll"],
-        linux_dylibs: &["libcublasLt.so.13", "libcublas.so.13"],
+        dylibs: &["cublasLt64_13.dll", "cublas64_13.dll"],
+        extract_policy: ExtractPolicy::Selected(&["cublasLt64_13.dll", "cublas64_13.dll"]),
     },
     WheelSpec {
         package: "nvidia-cufft/12.1.0.78",
-        windows_dylibs: &["cufft64_12.dll"],
-        linux_dylibs: &["libcufft.so.12"],
+        dylibs: &["cufft64_12.dll"],
+        extract_policy: ExtractPolicy::Selected(&["cufft64_12.dll"]),
     },
     WheelSpec {
         package: "nvidia-curand/10.4.1.81",
-        windows_dylibs: &["curand64_10.dll"],
-        linux_dylibs: &["libcurand.so.10"],
+        dylibs: &["curand64_10.dll"],
+        extract_policy: ExtractPolicy::Selected(&["curand64_10.dll"]),
     },
 ];
+
+#[cfg(target_os = "linux")]
+const WHEELS: &[WheelSpec] = &[
+    WheelSpec {
+        package: "nvidia-cuda-runtime-cu12/12.9.79",
+        dylibs: &["libcudart.so.12"],
+        extract_policy: ExtractPolicy::Selected(&["libcudart.so.12"]),
+    },
+    WheelSpec {
+        package: "nvidia-cublas-cu12/12.9.1.4",
+        dylibs: &["libcublasLt.so.12", "libcublas.so.12"],
+        extract_policy: ExtractPolicy::Selected(&["libcublasLt.so.12", "libcublas.so.12"]),
+    },
+    WheelSpec {
+        package: "nvidia-cufft-cu12/11.4.1.4",
+        dylibs: &["libcufft.so.11"],
+        extract_policy: ExtractPolicy::Selected(&["libcufft.so.11"]),
+    },
+    WheelSpec {
+        package: "nvidia-curand-cu12/10.3.10.19",
+        dylibs: &["libcurand.so.10"],
+        extract_policy: ExtractPolicy::Selected(&["libcurand.so.10"]),
+    },
+    WheelSpec {
+        package: "nvidia-cuda-nvrtc-cu12/12.9.86",
+        dylibs: &["libnvrtc.so.12"],
+        // NVRTC loads its companion builtins library at runtime, so extract
+        // all runtime-looking libraries from the wheel instead of a single SONAME.
+        extract_policy: ExtractPolicy::RuntimeLibraries,
+    },
+];
+
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
+const WHEELS: &[WheelSpec] = &[];
 
 impl CudaDriverVersion {
     pub const fn from_raw(raw: i32) -> Self {
@@ -83,12 +119,28 @@ impl CudaDriverVersion {
         (self.raw % 1000) / 10
     }
 
+    pub const fn supports_cuda_12_9(self) -> bool {
+        self.raw >= CUDA_12_9_DRIVER_VERSION
+    }
+
     pub const fn supports_cuda_13_0(self) -> bool {
         self.raw >= CUDA_13_0_DRIVER_VERSION
     }
 
     pub const fn supports_cuda_13_1(self) -> bool {
         self.raw >= CUDA_13_1_DRIVER_VERSION
+    }
+
+    pub const fn supports_bundled_main_runtime(self) -> bool {
+        #[cfg(target_os = "linux")]
+        {
+            self.supports_cuda_12_9()
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        {
+            self.supports_cuda_13_0()
+        }
     }
 }
 
@@ -188,7 +240,24 @@ pub fn compute_capability() -> Result<(i32, i32)> {
     }
 }
 
-/// Check whether the installed NVIDIA driver supports CUDA 13.0+.
+fn bundled_runtime_label() -> &'static str {
+    #[cfg(target_os = "linux")]
+    {
+        "CUDA 12.9"
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        "CUDA 13.0"
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    {
+        "the bundled CUDA runtime"
+    }
+}
+
+/// Check whether the installed NVIDIA driver supports the bundled CUDA runtime.
 ///
 /// Returns `true` when GPU compute should be used, `false` when the caller
 /// should fall back to CPU.  Warnings are emitted via `tracing::warn!`.
@@ -199,21 +268,23 @@ pub fn check_cuda_driver_support() -> bool {
 
     // Check driver version
     match driver_version() {
-        Ok(version) if version.supports_cuda_13_0() => {
+        Ok(version) if version.supports_bundled_main_runtime() => {
             tracing::info!("NVIDIA driver reports CUDA {version} support");
         }
         Ok(version) => {
             tracing::warn!(
                 "NVIDIA driver only supports CUDA {version}; \
                  falling back to CPU. Update your NVIDIA driver to a version \
-                 that supports CUDA 13.0 or newer to enable GPU acceleration."
+                 that supports {} or newer to enable GPU acceleration.",
+                bundled_runtime_label(),
             );
             return false;
         }
         Err(err) => {
             tracing::warn!(
-                "Could not verify NVIDIA driver support for CUDA 13.0: {err:#}; \
-                 falling back to CPU."
+                "Could not verify NVIDIA driver support for {}: {err:#}; \
+                 falling back to CPU.",
+                bundled_runtime_label(),
             );
             return false;
         }
@@ -249,14 +320,13 @@ pub(crate) fn package_enabled(runtime: &Runtime) -> bool {
     runtime.wants_gpu()
         && driver_library_available()
         && driver_version()
-            .map(|version| version.supports_cuda_13_0())
+            .map(|version| version.supports_bundled_main_runtime())
             .unwrap_or(false)
 }
 
 const fn meets_min_compute_capability(capability: (i32, i32)) -> bool {
     capability.0 > MIN_COMPUTE_CAPABILITY.0
-        || (capability.0 == MIN_COMPUTE_CAPABILITY.0
-            && capability.1 >= MIN_COMPUTE_CAPABILITY.1)
+        || (capability.0 == MIN_COMPUTE_CAPABILITY.0 && capability.1 >= MIN_COMPUTE_CAPABILITY.1)
 }
 
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
@@ -278,7 +348,7 @@ pub(crate) fn package_present(runtime: &Runtime) -> Result<bool> {
 
     Ok(WHEELS
         .iter()
-        .flat_map(|wheel| wheel.dylibs().iter())
+        .flat_map(|wheel| wheel.dylibs.iter())
         .all(|dylib| install_dir.join(dylib).exists()))
 }
 
@@ -305,7 +375,7 @@ pub(crate) async fn ensure_ready(runtime: &Runtime) -> Result<()> {
                 &archive,
                 &install_dir,
                 ArchiveKind::Zip,
-                ExtractPolicy::Selected(wheel.dylibs()),
+                wheel.extract_policy,
             )?;
         }
 
@@ -314,7 +384,7 @@ pub(crate) async fn ensure_ready(runtime: &Runtime) -> Result<()> {
 
     add_runtime_search_path(&install_dir)?;
     for wheel in WHEELS {
-        for dylib in wheel.dylibs() {
+        for dylib in wheel.dylibs {
             let path = install_dir.join(dylib);
             if path.exists() {
                 preload_library(&path)?;
@@ -359,7 +429,13 @@ fn platform_tags() -> Result<&'static [&'static str]> {
     return Ok(&["win_amd64"]);
 
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    return Ok(&["manylinux_2_27_x86_64", "manylinux_2_17_x86_64"]);
+    return Ok(&[
+        "manylinux_2_27_x86_64",
+        "manylinux2014_x86_64",
+        "manylinux_2_17_x86_64",
+        "manylinux2010_x86_64",
+        "manylinux_2_12_x86_64",
+    ]);
 
     #[cfg(not(any(
         all(target_os = "windows", target_arch = "x86_64"),
@@ -370,19 +446,6 @@ fn platform_tags() -> Result<&'static [&'static str]> {
         std::env::consts::OS,
         std::env::consts::ARCH
     )
-}
-
-impl WheelSpec {
-    fn dylibs(&self) -> &'static [&'static str] {
-        #[cfg(target_os = "windows")]
-        return self.windows_dylibs;
-
-        #[cfg(target_os = "linux")]
-        return self.linux_dylibs;
-
-        #[allow(unreachable_code)]
-        &[]
-    }
 }
 
 fn source_id() -> Result<String> {
@@ -429,6 +492,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
     fn source_id_includes_platform() {
         let id = source_id().unwrap();
         assert!(id.contains("cuda"));
@@ -439,11 +503,7 @@ mod tests {
     #[cfg(any(target_os = "windows", target_os = "linux"))]
     fn wheels_have_dylibs_for_current_platform() {
         for wheel in WHEELS {
-            assert!(
-                !wheel.dylibs().is_empty(),
-                "{} has no dylibs",
-                wheel.package
-            );
+            assert!(!wheel.dylibs.is_empty(), "{} has no dylibs", wheel.package);
         }
     }
 
@@ -453,14 +513,14 @@ mod tests {
         let root = tempdir.path();
 
         for wheel in WHEELS {
-            for dylib in wheel.dylibs() {
+            for dylib in wheel.dylibs {
                 std::fs::write(root.join(dylib), b"ok").unwrap();
             }
         }
 
         let all_dylibs: Vec<&str> = WHEELS
             .iter()
-            .flat_map(|wheel| wheel.dylibs().iter().copied())
+            .flat_map(|wheel| wheel.dylibs.iter().copied())
             .collect();
         for dylib in &all_dylibs {
             assert!(root.join(dylib).exists());
@@ -473,6 +533,13 @@ mod tests {
         assert_eq!(version.major(), 13);
         assert_eq!(version.minor(), 1);
         assert_eq!(version.to_string(), "13.1");
+    }
+
+    #[test]
+    fn checks_cuda_12_9_threshold() {
+        assert!(CudaDriverVersion::from_raw(12090).supports_cuda_12_9());
+        assert!(CudaDriverVersion::from_raw(13000).supports_cuda_12_9());
+        assert!(!CudaDriverVersion::from_raw(12080).supports_cuda_12_9());
     }
 
     #[test]
