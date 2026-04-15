@@ -1,8 +1,7 @@
 use image::ImageFormat;
 use koharu_core::Document;
 use koharu_core::commands::{
-    DeviceInfo, FileEntry, FileResult, OpenDocumentsPayload, OpenExternalPayload,
-    ThumbnailResult,
+    DeviceInfo, FileEntry, FileResult, OpenDocumentsPayload, OpenExternalPayload, ThumbnailResult,
 };
 use rfd::FileDialog;
 use std::path::{Path, PathBuf};
@@ -210,7 +209,8 @@ async fn pick_import_entries(source: ImportSource) -> anyhow::Result<Option<Vec<
 }
 
 fn read_file_entries(paths: Vec<PathBuf>) -> anyhow::Result<Vec<FileEntry>> {
-    paths.into_iter()
+    paths
+        .into_iter()
         .filter(|path| is_supported_image_path(path))
         .map(|path| {
             let data = std::fs::read(&path)
@@ -225,10 +225,7 @@ fn read_file_entries(paths: Vec<PathBuf>) -> anyhow::Result<Vec<FileEntry>> {
         .collect()
 }
 
-fn collect_supported_image_paths(
-    root: &Path,
-    out: &mut Vec<PathBuf>,
-) -> anyhow::Result<()> {
+fn collect_supported_image_paths(root: &Path, out: &mut Vec<PathBuf>) -> anyhow::Result<()> {
     for entry in std::fs::read_dir(root)? {
         let entry = entry?;
         let file_type = entry.file_type()?;

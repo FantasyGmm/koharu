@@ -78,7 +78,10 @@ pub fn router(resources: SharedState, tracker: Tracker) -> axum::Router {
     let state = ApiState { resources, tracker };
     let (router, _) = api();
     router
-        .route("/documents/import-dialog", post(import_documents_from_dialog))
+        .route(
+            "/documents/import-dialog",
+            post(import_documents_from_dialog),
+        )
         .layer(DefaultBodyLimit::max(MAX_BODY_SIZE))
         .with_state(state)
 }
