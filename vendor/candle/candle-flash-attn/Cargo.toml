@@ -1,0 +1,12 @@
+[package]
+name = "candle-flash-attn"
+version = "0.9.2"
+edition = "2021"
+description = "Stub flash-attn crate for vendored Candle builds without the flash-attn feature."
+license = "MIT OR Apache-2.0"
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+default = []
