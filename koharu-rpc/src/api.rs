@@ -7,6 +7,7 @@ use axum::{
         header::{CONTENT_DISPOSITION, CONTENT_TYPE},
     },
     response::{IntoResponse, Response},
+    routing::post,
 };
 use koharu_app::{AppResources, config as app_config, edit, engine, io, llm, pipeline};
 use koharu_core::{
@@ -40,11 +41,7 @@ impl ApiState {
 
 pub fn api() -> (axum::Router<ApiState>, utoipa::openapi::OpenApi) {
     OpenApiRouter::default()
-        .routes(routes!(
-            list_documents,
-            import_documents,
-            import_documents_from_dialog
-        ))
+        .routes(routes!(list_documents, import_documents))
         .routes(routes!(reorder_documents))
         .routes(routes!(get_document))
         .routes(routes!(update_document_style))
@@ -81,6 +78,7 @@ pub fn router(resources: SharedState, tracker: Tracker) -> axum::Router {
     let state = ApiState { resources, tracker };
     let (router, _) = api();
     router
+        .route("/documents/import-dialog", post(import_documents_from_dialog))
         .layer(DefaultBodyLimit::max(MAX_BODY_SIZE))
         .with_state(state)
 }
