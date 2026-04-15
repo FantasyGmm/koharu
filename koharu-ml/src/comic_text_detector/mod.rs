@@ -3,7 +3,7 @@ mod postprocess;
 mod unet;
 mod yolo_v5;
 
-use std::cmp;
+use std::{cmp, sync::OnceLock};
 
 use anyhow::{Context, bail};
 use candle_core::{DType, Device, IndexOp, Tensor};
@@ -29,7 +29,10 @@ const DILATION_RADIUS: u32 = 3;
 const HOLE_CLOSE_RADIUS: u32 = 10;
 const BBOX_DILATION: f32 = 1.0;
 const GPU_DETECT_SIZE: u32 = 768;
+const VOLTA_GPU_DETECT_SIZE: u32 = 640;
 const CPU_DETECT_SIZE: u32 = 640;
+
+static CUDA_DETECT_SIZE: OnceLock<u32> = OnceLock::new();
 
 koharu_runtime::declare_hf_model_package!(
     id: "model:comic-text-detector:yolo-v5",
@@ -187,10 +190,7 @@ impl ComicTextDetector {
 #[instrument(level = "debug", skip_all)]
 fn preprocess(image: &DynamicImage, device: &Device) -> anyhow::Result<(Tensor, (u32, u32))> {
     let (orig_w, orig_h) = image.dimensions();
-    let image_size = match device {
-        Device::Cpu => CPU_DETECT_SIZE,
-        _ => GPU_DETECT_SIZE,
-    };
+    let image_size = detect_size_for_device(device);
     let (width, height) = if orig_w >= orig_h {
         (image_size, image_size * orig_h / orig_w)
     } else {
@@ -210,6 +210,41 @@ fn preprocess(image: &DynamicImage, device: &Device) -> anyhow::Result<(Tensor, 
         * (1. / 255.))?;
 
     Ok((tensor, (width, height)))
+}
+
+fn detect_size_for_device(device: &Device) -> u32 {
+    match device {
+        Device::Cpu => CPU_DETECT_SIZE,
+        Device::Cuda(_) => {
+            *CUDA_DETECT_SIZE.get_or_init(|| match koharu_runtime::compute_capability() {
+                Ok((7, 0)) => {
+                    tracing::info!(
+                        "Using reduced comic-text-detector CUDA input size {} for Volta-class GPU",
+                        VOLTA_GPU_DETECT_SIZE
+                    );
+                    VOLTA_GPU_DETECT_SIZE
+                }
+                Ok((major, minor)) => {
+                    tracing::info!(
+                        "Using comic-text-detector CUDA input size {} for compute capability {}.{}",
+                        GPU_DETECT_SIZE,
+                        major,
+                        minor
+                    );
+                    GPU_DETECT_SIZE
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        "Could not query CUDA compute capability for comic-text-detector; \
+                     using default GPU input size {}: {err:#}",
+                        GPU_DETECT_SIZE
+                    );
+                    GPU_DETECT_SIZE
+                }
+            })
+        }
+        _ => GPU_DETECT_SIZE,
+    }
 }
 
 #[instrument(level = "debug", skip(predictions))]
