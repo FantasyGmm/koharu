@@ -254,7 +254,9 @@ pub(crate) fn package_enabled(runtime: &Runtime) -> bool {
 }
 
 const fn meets_min_compute_capability(capability: (i32, i32)) -> bool {
-    capability >= MIN_COMPUTE_CAPABILITY
+    capability.0 > MIN_COMPUTE_CAPABILITY.0
+        || (capability.0 == MIN_COMPUTE_CAPABILITY.0
+            && capability.1 >= MIN_COMPUTE_CAPABILITY.1)
 }
 
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
