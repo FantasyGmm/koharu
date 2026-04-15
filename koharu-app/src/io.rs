@@ -1,12 +1,22 @@
 use image::ImageFormat;
 use koharu_core::Document;
 use koharu_core::commands::{
-    DeviceInfo, FileResult, OpenDocumentsPayload, OpenExternalPayload, ThumbnailResult,
+    DeviceInfo, FileEntry, FileResult, OpenDocumentsPayload, OpenExternalPayload,
+    ThumbnailResult,
 };
 use rfd::FileDialog;
+use std::path::{Path, PathBuf};
 
 use crate::AppResources;
 use crate::utils::{encode_image_dynamic, mime_from_ext};
+
+const SUPPORTED_IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "webp"];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImportSource {
+    Files,
+    Folder,
+}
 
 pub async fn app_version(state: AppResources) -> anyhow::Result<String> {
     Ok(state.version.to_string())
@@ -86,6 +96,28 @@ pub async fn add_documents(
 }
 
 #[tracing::instrument(level = "info", skip_all)]
+pub async fn import_documents_from_dialog(
+    state: AppResources,
+    replace: bool,
+    source: ImportSource,
+) -> anyhow::Result<usize> {
+    let Some(files) = pick_import_entries(source).await? else {
+        anyhow::bail!("__CANCELLED__");
+    };
+
+    if files.is_empty() {
+        anyhow::bail!("No supported image files found");
+    }
+
+    let count = state.storage.import_files(files, replace).await?.len();
+    if replace {
+        Ok(count)
+    } else {
+        Ok(state.storage.page_count().await)
+    }
+}
+
+#[tracing::instrument(level = "info", skip_all)]
 pub async fn export_document(state: AppResources, document_id: &str) -> anyhow::Result<FileResult> {
     let doc = state.storage.page(document_id).await?;
 
@@ -151,4 +183,72 @@ pub async fn export_all_rendered(state: AppResources) -> anyhow::Result<usize> {
 
 async fn pick_output_dir() -> anyhow::Result<Option<std::path::PathBuf>> {
     Ok(tokio::task::spawn_blocking(|| FileDialog::new().pick_folder()).await?)
+}
+
+async fn pick_import_entries(source: ImportSource) -> anyhow::Result<Option<Vec<FileEntry>>> {
+    tokio::task::spawn_blocking(move || match source {
+        ImportSource::Files => {
+            let Some(paths) = FileDialog::new()
+                .add_filter("Images", SUPPORTED_IMAGE_EXTENSIONS)
+                .pick_files()
+            else {
+                return Ok(None);
+            };
+            Ok(Some(read_file_entries(paths)?))
+        }
+        ImportSource::Folder => {
+            let Some(folder) = FileDialog::new().pick_folder() else {
+                return Ok(None);
+            };
+            let mut paths = Vec::new();
+            collect_supported_image_paths(&folder, &mut paths)?;
+            paths.sort();
+            Ok(Some(read_file_entries(paths)?))
+        }
+    })
+    .await?
+}
+
+fn read_file_entries(paths: Vec<PathBuf>) -> anyhow::Result<Vec<FileEntry>> {
+    paths.into_iter()
+        .filter(|path| is_supported_image_path(path))
+        .map(|path| {
+            let data = std::fs::read(&path)
+                .map_err(|err| anyhow::anyhow!("Failed to read {}: {err}", path.display()))?;
+            let name = path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+            Ok(FileEntry { name, data })
+        })
+        .collect()
+}
+
+fn collect_supported_image_paths(
+    root: &Path,
+    out: &mut Vec<PathBuf>,
+) -> anyhow::Result<()> {
+    for entry in std::fs::read_dir(root)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let path = entry.path();
+        if file_type.is_dir() {
+            collect_supported_image_paths(&path, out)?;
+        } else if file_type.is_file() && is_supported_image_path(&path) {
+            out.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn is_supported_image_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| {
+            SUPPORTED_IMAGE_EXTENSIONS
+                .iter()
+                .any(|allowed| ext.eq_ignore_ascii_case(allowed))
+        })
+        .unwrap_or(false)
 }

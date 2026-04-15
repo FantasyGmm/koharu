@@ -40,7 +40,11 @@ impl ApiState {
 
 pub fn api() -> (axum::Router<ApiState>, utoipa::openapi::OpenApi) {
     OpenApiRouter::default()
-        .routes(routes!(list_documents, import_documents))
+        .routes(routes!(
+            list_documents,
+            import_documents,
+            import_documents_from_dialog
+        ))
         .routes(routes!(reorder_documents))
         .routes(routes!(get_document))
         .routes(routes!(update_document_style))
@@ -143,6 +147,29 @@ struct MultipartUpload {
 #[serde(rename_all = "camelCase")]
 struct ImportQuery {
     mode: Option<koharu_core::ImportMode>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, IntoParams)]
+#[serde(rename_all = "camelCase")]
+struct NativeImportQuery {
+    mode: Option<koharu_core::ImportMode>,
+    source: NativeImportSource,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+enum NativeImportSource {
+    Files,
+    Folder,
+}
+
+impl From<NativeImportSource> for io::ImportSource {
+    fn from(value: NativeImportSource) -> Self {
+        match value {
+            NativeImportSource::Files => io::ImportSource::Files,
+            NativeImportSource::Folder => io::ImportSource::Folder,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, IntoParams)]
@@ -626,6 +653,37 @@ async fn import_documents(
 
     let documents = resources.storage.list_pages().await;
 
+    Ok(Json(koharu_core::ImportResult {
+        total_count: documents.len(),
+        documents,
+    }))
+}
+
+#[utoipa::path(
+    post,
+    path = "/documents/import-dialog",
+    operation_id = "importDocumentsFromDialog",
+    tag = "documents",
+    params(NativeImportQuery),
+    responses(
+        (status = 200, body = koharu_core::ImportResult),
+        (status = 400, body = ApiError),
+        (status = 503, body = ApiError),
+    ),
+)]
+#[tracing::instrument(level = "info", skip_all)]
+async fn import_documents_from_dialog(
+    State(state): State<ApiState>,
+    Query(query): Query<NativeImportQuery>,
+) -> ApiResult<Json<koharu_core::ImportResult>> {
+    let resources = state.resources()?;
+    let replace = matches!(
+        query.mode.unwrap_or(koharu_core::ImportMode::Replace),
+        koharu_core::ImportMode::Replace
+    );
+    io::import_documents_from_dialog(resources.clone(), replace, query.source.into()).await?;
+
+    let documents = resources.storage.list_pages().await;
     Ok(Json(koharu_core::ImportResult {
         total_count: documents.len(),
         documents,

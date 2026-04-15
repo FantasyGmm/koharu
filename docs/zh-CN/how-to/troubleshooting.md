@@ -74,13 +74,14 @@ Koharu 首次使用时需要联网下载：
 
 ## 明明有 NVIDIA GPU，但 Koharu 还是回退到 CPU
 
-当 Koharu 无法确认你的驱动支持 CUDA 13.1 时，这就是预期行为。
+当 Koharu 无法确认你的驱动支持内置的 CUDA 运行时时，这就是预期行为。对主管线来说，这里指的是 CUDA 13.0。
 
 当前运行时逻辑是：
 
 - 检测 NVIDIA 驱动
 - 查询驱动兼容性
-- 只有明确支持 CUDA 13.1 时才继续使用 CUDA
+- 只有明确支持主管线所需的 CUDA 13.0 时才继续使用 CUDA
+- 在 Windows 上，只有当上游的 CUDA 13.1 本地 llama.cpp 包也可用时，才会让本地 LLM 走 CUDA
 - 否则回退到 CPU
 
 建议操作：

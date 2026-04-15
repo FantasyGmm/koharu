@@ -13,7 +13,7 @@ const CUDA_13_0_DRIVER_VERSION: i32 = 13000;
 const CUDA_13_1_DRIVER_VERSION: i32 = 13010;
 const CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR: i32 = 75;
 const CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR: i32 = 76;
-const MIN_COMPUTE_CAPABILITY: (i32, i32) = (7, 5); // Turing (RTX 20xx) and above
+const MIN_COMPUTE_CAPABILITY: (i32, i32) = (7, 0); // Volta (V100) and above
 
 type CuInit = unsafe extern "C" fn(flags: u32) -> i32;
 type CuDriverGetVersion = unsafe extern "C" fn(driver_version: *mut i32) -> i32;
@@ -219,17 +219,20 @@ pub fn check_cuda_driver_support() -> bool {
         }
     }
 
-    // Check GPU compute capability (need >= 7.5 / Turing)
+    // Check GPU compute capability (need >= 7.0 / Volta)
     match compute_capability() {
-        Ok((major, minor)) if (major, minor) >= MIN_COMPUTE_CAPABILITY => {
+        Ok((major, minor)) if meets_min_compute_capability((major, minor)) => {
             tracing::info!("GPU compute capability: {major}.{minor}");
             true
         }
         Ok((major, minor)) => {
             tracing::warn!(
                 "GPU compute capability {major}.{minor} is below the minimum \
-                 required {}.{}; falling back to CPU. A Turing (RTX 20xx) or \
-                 newer GPU is required for GPU acceleration.",
+                 required {}.{}; falling back to CPU. A Volta-class GPU \
+                 (for example V100) or newer is required for the main CUDA \
+                 acceleration path. On Windows, the optional local llama.cpp \
+                 CUDA runtime remains more restrictive and still uses the \
+                 upstream CUDA 13.1 package.",
                 MIN_COMPUTE_CAPABILITY.0,
                 MIN_COMPUTE_CAPABILITY.1,
             );
@@ -248,6 +251,10 @@ pub(crate) fn package_enabled(runtime: &Runtime) -> bool {
         && driver_version()
             .map(|version| version.supports_cuda_13_0())
             .unwrap_or(false)
+}
+
+const fn meets_min_compute_capability(capability: (i32, i32)) -> bool {
+    capability >= MIN_COMPUTE_CAPABILITY
 }
 
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
@@ -480,5 +487,13 @@ mod tests {
         assert!(CudaDriverVersion::from_raw(13020).supports_cuda_13_1());
         assert!(!CudaDriverVersion::from_raw(13000).supports_cuda_13_1());
         assert!(!CudaDriverVersion::from_raw(12080).supports_cuda_13_1());
+    }
+
+    #[test]
+    fn accepts_volta_compute_capability() {
+        assert!(meets_min_compute_capability((7, 0)));
+        assert!(meets_min_compute_capability((7, 5)));
+        assert!(meets_min_compute_capability((8, 0)));
+        assert!(!meets_min_compute_capability((6, 1)));
     }
 }

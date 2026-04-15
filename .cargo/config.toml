@@ -4,5 +4,5 @@ CARGO_WORKSPACE_DIR = { value = "", relative = true }
 LLAMA_CPP_TAG = "b8665"
 # CUDA 13.0 requires C++17
 NVCC_PREPEND_FLAGS = "-std=c++17"
-# override nvidia-smi compute capability
-CUDA_COMPUTE_CAP = "75"
+# default bundled CUDA kernel target; override locally if you need a newer arch
+CUDA_COMPUTE_CAP = "70"

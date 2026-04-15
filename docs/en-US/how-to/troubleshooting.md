@@ -74,13 +74,14 @@ If downloads keep failing, test on a different network first. That is the fastes
 
 ## Koharu falls back to CPU even though you have an NVIDIA GPU
 
-This is expected when Koharu cannot confirm support for CUDA 13.1.
+This is expected when Koharu cannot confirm support for the bundled CUDA runtime. For the main pipeline, that means CUDA 13.0.
 
 The current runtime behavior is:
 
 - detect an NVIDIA driver
 - query driver compatibility
-- continue on CUDA only when the driver reports CUDA 13.1 support
+- continue on CUDA only when the driver reports CUDA 13.0 support for the main pipeline
+- on Windows, keep local llama.cpp on Vulkan or CPU unless the upstream CUDA 13.1 package is also supported
 - otherwise fall back to CPU
 
 Try this:

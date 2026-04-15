@@ -51,13 +51,13 @@ Koharu 支持：
 
 - 检测与修复阶段最受益于 CUDA 或 Metal
 - Vulkan 主要是 OCR 与本地 LLM 推理的备用 GPU 路径
-- 如果 Koharu 无法确认你的 NVIDIA 驱动支持 CUDA 13.1，它会回退到 CPU
+- 如果 Koharu 无法确认你的 NVIDIA 驱动支持内置的 CUDA 13.0 主运行时，它会回退到 CPU
 
 对于支持 CUDA 的系统，Koharu 会自行初始化所需的运行时组件，而不是要求你手动配置一堆库路径。
 
 !!! note
 
-    请保持 NVIDIA 驱动为较新版本。Koharu 会检查 CUDA 13.1 支持情况，驱动太旧时会自动回退到 CPU。
+    请保持 NVIDIA 驱动为较新版本。Koharu 会检查主管线所需的 CUDA 13.0 支持情况，驱动太旧时会自动回退到 CPU。在 Windows 上，可选的本地 llama.cpp CUDA 运行时仍然使用上游 CUDA 13.1 包。
 
 ## 安装后下一步做什么
 

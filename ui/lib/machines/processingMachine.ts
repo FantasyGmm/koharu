@@ -1,6 +1,6 @@
 import { setup, assign, fromPromise, fromCallback } from 'xstate'
 import type { QueryClient } from '@tanstack/react-query'
-import { ProgressBarStatus, getCurrentWindow } from '@/lib/backend'
+import { ProgressBarStatus, getCurrentWindow, isTauri } from '@/lib/backend'
 import { useEditorUiStore } from '@/lib/stores/editorUiStore'
 import { pickImageFiles, pickImageFolderFiles } from '@/lib/filePicker'
 import {
@@ -8,6 +8,7 @@ import {
   getGetDocumentQueryKey,
   importDocuments,
 } from '@/lib/api/documents/documents'
+import { importDocumentsFromDialog } from '@/lib/api/documents/nativeImport'
 import {
   detectDocument,
   recognizeDocument,
@@ -144,6 +145,10 @@ const importActor = fromPromise<
   ImportResult,
   { mode: 'replace' | 'append'; source: 'files' | 'folder' }
 >(async ({ input }) => {
+  if (isTauri()) {
+    return importDocumentsFromDialog(input.mode, input.source)
+  }
+
   const picked =
     input.source === 'folder'
       ? await pickImageFolderFiles()
