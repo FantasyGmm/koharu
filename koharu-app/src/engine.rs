@@ -508,7 +508,7 @@ pub const DEFAULT_PIPELINE: &[&str] = &[
 use image::DynamicImage;
 use koharu_core::{FontPrediction, SerializableDynamicImage, TextBlock, TextDirection};
 
-fn should_force_ctd_cpu(res: &AppResources) -> bool {
+fn should_force_conv_transpose_cpu(res: &AppResources, model_name: &str) -> bool {
     if !matches!(res.device, koharu_ml::Device::Cuda(_)) {
         return false;
     }
@@ -516,14 +516,14 @@ fn should_force_ctd_cpu(res: &AppResources) -> bool {
     match koharu_runtime::compute_capability() {
         Ok((7, 0)) => {
             tracing::warn!(
-                "Forcing Comic Text Detector to CPU on sm_70 GPU to avoid Candle conv_transpose2d CUDA launch failures."
+                "Forcing {model_name} to CPU on sm_70 GPU to avoid Candle conv_transpose2d CUDA launch failures."
             );
             true
         }
         Ok(_) => false,
         Err(err) => {
             tracing::warn!(
-                "Could not query CUDA compute capability for Comic Text Detector fallback decision: {err:#}"
+                "Could not query CUDA compute capability for {model_name} fallback decision: {err:#}"
             );
             false
         }
@@ -610,7 +610,8 @@ inventory::submit! {
         needs: &[],
         produces: &[Artifact::TextBlocks, Artifact::Segment],
         load: |res| Box::pin(async move {
-            let cpu = matches!(res.device, koharu_ml::Device::Cpu) || should_force_ctd_cpu(res);
+            let cpu = matches!(res.device, koharu_ml::Device::Cpu)
+                || should_force_conv_transpose_cpu(res, "Comic Text Detector");
             let m = koharu_ml::comic_text_detector::ComicTextDetector::load(&res.runtime, cpu).await?;
             Ok(Box::new(CtdFullEngine(m)) as Box<dyn Engine>)
         }),
@@ -659,7 +660,8 @@ inventory::submit! {
         needs: &[Artifact::TextBlocks],
         produces: &[Artifact::Segment],
         load: |res| Box::pin(async move {
-            let cpu = matches!(res.device, koharu_ml::Device::Cpu) || should_force_ctd_cpu(res);
+            let cpu = matches!(res.device, koharu_ml::Device::Cpu)
+                || should_force_conv_transpose_cpu(res, "Comic Text Detector");
             let m = koharu_ml::comic_text_detector::ComicTextDetector::load_segmentation_only(&res.runtime, cpu).await?;
             Ok(Box::new(CtdSegmentEngine(m)) as Box<dyn Engine>)
         }),
@@ -773,9 +775,11 @@ inventory::submit! {
         needs: &[],
         produces: &[Artifact::Bubbles],
         load: |res| Box::pin(async move {
+            let cpu = matches!(res.device, koharu_ml::Device::Cpu)
+                || should_force_conv_transpose_cpu(res, "Speech Bubble Segmentation");
             let m = koharu_ml::speech_bubble_segmentation::SpeechBubbleSegmentation::load(
                 &res.runtime,
-                matches!(res.device, koharu_ml::Device::Cpu),
+                cpu,
             ).await?;
             Ok(Box::new(SpeechBubbleSegEngine(m)) as Box<dyn Engine>)
         }),
@@ -1073,7 +1077,9 @@ inventory::submit! {
         needs: &[Artifact::Segment],
         produces: &[Artifact::Inpainted],
         load: |res| Box::pin(async move {
-            let m = koharu_ml::lama::Lama::load(&res.runtime, matches!(res.device, koharu_ml::Device::Cpu)).await?;
+            let cpu = matches!(res.device, koharu_ml::Device::Cpu)
+                || should_force_conv_transpose_cpu(res, "Lama Manga");
+            let m = koharu_ml::lama::Lama::load(&res.runtime, cpu).await?;
             Ok(Box::new(LamaInpaintEngine(m)) as Box<dyn Engine>)
         }),
     }
@@ -1120,9 +1126,11 @@ inventory::submit! {
         needs: &[Artifact::Segment],
         produces: &[Artifact::Inpainted],
         load: |res| Box::pin(async move {
+            let cpu = matches!(res.device, koharu_ml::Device::Cpu)
+                || should_force_conv_transpose_cpu(res, "AOT Inpainting");
             let m = koharu_ml::aot_inpainting::AotInpainting::load(
                 &res.runtime,
-                matches!(res.device, koharu_ml::Device::Cpu),
+                cpu,
             ).await?;
             Ok(Box::new(AotInpaintEngine(m)) as Box<dyn Engine>)
         }),
