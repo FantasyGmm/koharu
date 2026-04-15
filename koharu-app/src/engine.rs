@@ -508,6 +508,28 @@ pub const DEFAULT_PIPELINE: &[&str] = &[
 use image::DynamicImage;
 use koharu_core::{FontPrediction, SerializableDynamicImage, TextBlock, TextDirection};
 
+fn should_force_ctd_cpu(res: &AppResources) -> bool {
+    if !matches!(res.device, koharu_ml::Device::Cuda(_)) {
+        return false;
+    }
+
+    match koharu_runtime::compute_capability() {
+        Ok((7, 0)) => {
+            tracing::warn!(
+                "Forcing Comic Text Detector to CPU on sm_70 GPU to avoid Candle conv_transpose2d CUDA launch failures."
+            );
+            true
+        }
+        Ok(_) => false,
+        Err(err) => {
+            tracing::warn!(
+                "Could not query CUDA compute capability for Comic Text Detector fallback decision: {err:#}"
+            );
+            false
+        }
+    }
+}
+
 // --- PP-DocLayout V3 (detector) -------------------------------------------
 
 struct PpDocLayoutEngine(koharu_ml::pp_doclayout_v3::PPDocLayoutV3);
@@ -588,7 +610,8 @@ inventory::submit! {
         needs: &[],
         produces: &[Artifact::TextBlocks, Artifact::Segment],
         load: |res| Box::pin(async move {
-            let m = koharu_ml::comic_text_detector::ComicTextDetector::load(&res.runtime, matches!(res.device, koharu_ml::Device::Cpu)).await?;
+            let cpu = matches!(res.device, koharu_ml::Device::Cpu) || should_force_ctd_cpu(res);
+            let m = koharu_ml::comic_text_detector::ComicTextDetector::load(&res.runtime, cpu).await?;
             Ok(Box::new(CtdFullEngine(m)) as Box<dyn Engine>)
         }),
     }
@@ -636,7 +659,8 @@ inventory::submit! {
         needs: &[Artifact::TextBlocks],
         produces: &[Artifact::Segment],
         load: |res| Box::pin(async move {
-            let m = koharu_ml::comic_text_detector::ComicTextDetector::load_segmentation_only(&res.runtime, matches!(res.device, koharu_ml::Device::Cpu)).await?;
+            let cpu = matches!(res.device, koharu_ml::Device::Cpu) || should_force_ctd_cpu(res);
+            let m = koharu_ml::comic_text_detector::ComicTextDetector::load_segmentation_only(&res.runtime, cpu).await?;
             Ok(Box::new(CtdSegmentEngine(m)) as Box<dyn Engine>)
         }),
     }
