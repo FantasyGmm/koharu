@@ -16,7 +16,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use koharu_core::{Document, TextShaderEffect, TextStrokeStyle};
 use petgraph::algo::toposort;
@@ -346,6 +346,17 @@ pub fn build_order(infos: &[&EngineInfo]) -> Result<Vec<usize>> {
     Ok(order.into_iter().map(|n| g[n]).collect())
 }
 
+fn log_engine_error(engine_id: &str, page_id: &str, err: &anyhow::Error) {
+    tracing::error!(
+        engine = engine_id,
+        page_id,
+        error = %err,
+        error_chain = %format_args!("{err:#}"),
+        error_backtrace = %err.backtrace(),
+        "engine failed"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Pipeline execution
 // ---------------------------------------------------------------------------
@@ -380,18 +391,32 @@ where
             continue;
         }
         on_step(seq, info.id).await;
-        async {
+        let result: Result<()> = async {
             let engine = res.registry.get(info.id, res).await?;
-            let patch = engine.run(&doc, res, options).await?;
+            let patch = engine
+                .run(&doc, res, options)
+                .await
+                .with_context(|| format!("engine '{}' failed during execution", info.id))?;
             if let Some(f) = patch.take() {
-                res.storage.update_page(page_id, f).await?;
+                res.storage
+                    .update_page(page_id, f)
+                    .await
+                    .with_context(|| format!("engine '{}' failed to update page", info.id))?;
             }
-            let updated = res.storage.page(page_id).await?;
+            let updated = res
+                .storage
+                .page(page_id)
+                .await
+                .with_context(|| format!("engine '{}' failed to reload page", info.id))?;
             verify_step_outputs(info, &updated)?;
             Ok::<_, anyhow::Error>(())
         }
         .instrument(tracing::info_span!("step", engine = info.id))
-        .await?;
+        .await;
+        if let Err(err) = &result {
+            log_engine_error(info.id, page_id, err);
+        }
+        result?;
     }
     Ok(())
 }
@@ -418,21 +443,45 @@ fn verify_step_outputs(info: &EngineInfo, doc: &Document) -> Result<()> {
 /// Run a single engine by id.
 #[tracing::instrument(level = "info", skip_all, fields(engine = id))]
 pub async fn run_one(id: &str, res: &AppResources, page_id: &str) -> Result<()> {
-    let _info = Registry::find(id)?;
-    let doc = res.storage.page(page_id).await?;
-    let engine = res.registry.get(id, res).await?;
-    let options = PipelineRunOptions::default();
-    let patch = engine.run(&doc, res, &options).await?;
-    if let Some(f) = patch.take() {
-        res.storage.update_page(page_id, f).await?;
+    let result: Result<()> = async {
+        let _info = Registry::find(id)?;
+        let doc =
+            res.storage.page(page_id).await.with_context(|| {
+                format!("failed to load document '{page_id}' for engine '{id}'")
+            })?;
+        let engine = res
+            .registry
+            .get(id, res)
+            .await
+            .with_context(|| format!("failed to load engine '{id}'"))?;
+        let options = PipelineRunOptions::default();
+        let patch = engine
+            .run(&doc, res, &options)
+            .await
+            .with_context(|| format!("engine '{id}' failed during execution"))?;
+        if let Some(f) = patch.take() {
+            res.storage
+                .update_page(page_id, f)
+                .await
+                .with_context(|| format!("engine '{id}' failed to update page"))?;
+        }
+        Ok(())
     }
-    Ok(())
+    .await;
+
+    if let Err(err) = &result {
+        log_engine_error(id, page_id, err);
+    }
+
+    result
 }
 
 /// Run multiple engines by id, sequentially.
 pub async fn run_many(ids: &[&str], res: &AppResources, page_id: &str) -> Result<()> {
     for &id in ids {
-        run_one(id, res, page_id).await?;
+        run_one(id, res, page_id)
+            .await
+            .with_context(|| format!("run_many aborted at engine '{id}'"))?;
     }
     Ok(())
 }
