@@ -38,6 +38,8 @@ runs/
 
 # model checkpoints
 models/
+!vendor/candle/candle-transformers/src/models/
+!vendor/candle/candle-transformers/src/models/**
 .env
 
 # Python
